@@ -14,9 +14,16 @@ from bs4 import BeautifulSoup
 URL = "https://foresignal.com/en/"
 TZ = ZoneInfo("Asia/Manila")
 
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+LAST_STATE_FILE = DATA_DIR / "latest_signals.json"
+
 MAP = "670429+-. 5,813"
 NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
+
+# ---------- FETCH + DECODE ----------
 
 def fetch_html(url: str) -> str:
     headers = {
@@ -32,25 +39,19 @@ def fetch_html(url: str) -> str:
 
 
 def decode_f(encoded: str) -> str:
-    out = []
-    for i, ch in enumerate(encoded):
-        idx = ord(ch) - 65 - i
-        if 0 <= idx < len(MAP):
-            out.append(MAP[idx])
-    return "".join(out).strip()
-
-
-def extract_encoded(script: str) -> str | None:
-    m = re.search(r"f\('([^']+)'\)", script or "")
-    return m.group(1) if m else None
+    return "".join(
+        MAP[ord(ch) - 65 - i]
+        for i, ch in enumerate(encoded)
+        if 0 <= ord(ch) - 65 - i < len(MAP)
+    ).strip()
 
 
 def extract_value(value_el) -> str:
     script = value_el.find("script")
     if script:
-        enc = extract_encoded(script.text)
-        if enc:
-            return decode_f(enc)
+        m = re.search(r"f\('([^']+)'\)", script.text)
+        if m:
+            return decode_f(m.group(1))
 
     txt = value_el.get_text(" ", strip=True)
     txt = re.sub(r"f\('[^']+'\)", "", txt)
@@ -58,9 +59,11 @@ def extract_value(value_el) -> str:
     return m.group(0) if m else ""
 
 
-def parse_signals(html: str) -> pd.DataFrame:
+# ---------- PARSE ----------
+
+def parse_signals(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    rows = []
+    signals = []
 
     for card in soup.select(".card.signal-card"):
         pair = card.select_one(".card-header a").text.strip()
@@ -100,83 +103,95 @@ def parse_signals(html: str) -> pd.DataFrame:
             elif t == "Sold at":
                 row["sold_at"] = v
 
-        rows.append(row)
+        signals.append(row)
 
-    return pd.DataFrame(rows)
+    # stable order
+    return sorted(signals, key=lambda x: x["pair"])
 
 
-# -------- BEAUTIFUL TELEGRAM HTML --------
+# ---------- CHANGE DETECTION ----------
 
-def build_html_message(df: pd.DataFrame, pulled_at: str) -> str:
+def has_changed(old: list[dict] | None, new: list[dict]) -> bool:
+    if old is None:
+        return True
+    return old != new
+
+
+# ---------- TELEGRAM HTML ----------
+
+def build_html(signals: list[dict], timestamp: str) -> str:
     lines = [
-        "<b>📊 Foresignal – Daily Signals</b>",
-        f"<i>🕒 {pulled_at} (UTC+8)</i>",
+        "<b>📊 Foresignal – Signal Update</b>",
+        f"<i>🕒 {timestamp} (UTC+8)</i>",
         ""
     ]
 
-    for _, r in df.iterrows():
-        lines.append(f"<b>{r['pair']}</b>")
-        lines.append(f"Status: <b>{r['status']}</b>")
+    for s in signals:
+        lines.append(f"<b>{s['pair']}</b>")
+        lines.append(f"Status: <b>{s['status']}</b>")
 
-        if r["sell_at"]:
-            lines.append(f"Sell: <code>{r['sell_at']}</code>")
-        if r["buy_at"]:
-            lines.append(f"Buy:  <code>{r['buy_at']}</code>")
-        if r["bought_at"]:
-            lines.append(f"Buy:  <code>{r['bought_at']}</code>")
-        if r["sold_at"]:
-            lines.append(f"Sell: <code>{r['sold_at']}</code>")
-        if r["take_profit_at"]:
-            lines.append(f"TP:   <code>{r['take_profit_at']}</code>")
-        if r["stop_loss_at"]:
-            lines.append(f"SL:   <code>{r['stop_loss_at']}</code>")
+        if s["sell_at"]:
+            lines.append(f"Sell: <code>{s['sell_at']}</code>")
+        if s["buy_at"]:
+            lines.append(f"Buy:  <code>{s['buy_at']}</code>")
+        if s["bought_at"]:
+            lines.append(f"Buy:  <code>{s['bought_at']}</code>")
+        if s["sold_at"]:
+            lines.append(f"Sell: <code>{s['sold_at']}</code>")
+        if s["take_profit_at"]:
+            lines.append(f"TP:   <code>{s['take_profit_at']}</code>")
+        if s["stop_loss_at"]:
+            lines.append(f"SL:   <code>{s['stop_loss_at']}</code>")
 
         lines.append("")
 
     return "\n".join(lines)
 
 
-def send_telegram_html(html: str):
+def send_telegram(html: str):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        print("Telegram secrets not set")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": html,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    requests.post(url, json=payload, timeout=30).raise_for_status()
+    requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=30,
+    ).raise_for_status()
 
+
+# ---------- MAIN ----------
 
 def main():
     now = datetime.now(TZ)
-    pulled_at = now.strftime("%Y-%m-%d %H:%M")
+    timestamp = now.strftime("%Y-%m-%d %H:%M")
 
     html = fetch_html(URL)
-    df = parse_signals(html)
+    current = parse_signals(html)
 
-    Path("data").mkdir(exist_ok=True)
+    previous = None
+    if LAST_STATE_FILE.exists():
+        previous = json.loads(LAST_STATE_FILE.read_text())
 
-    # Save JSON
-    json_payload = {
-        "source": "foresignal.com",
-        "pulled_at": pulled_at,
-        "signals": df.to_dict(orient="records"),
-    }
-    Path(f"data/foresignal_{now.date()}.json").write_text(
-        json.dumps(json_payload, indent=2), encoding="utf-8"
-    )
+    if not has_changed(previous, current):
+        print("No change detected — Telegram not sent.")
+        return
 
-    # Send beautiful HTML to Telegram
-    message = build_html_message(df, pulled_at)
-    send_telegram_html(message)
+    # Save latest state
+    LAST_STATE_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
 
-    print(message)
+    # Send Telegram
+    message = build_html(current, timestamp)
+    send_telegram(message)
+
+    print("Change detected — Telegram sent.")
 
 
 if __name__ == "__main__":
