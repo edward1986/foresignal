@@ -1,0 +1,92 @@
+[
+  {
+    "pair": "AUD/USD",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "0.7002",
+    "sold_at": "0.7019"
+  },
+  {
+    "pair": "EUR/JPY",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "183.73",
+    "sold_at": "184.05"
+  },
+  {
+    "pair": "EUR/USD",
+    "status": "Cancelled",
+    "sell_at": "1.1959",
+    "take_profit_at": "1.1924",
+    "stop_loss_at": "1.2003",
+    "buy_at": "",
+    "bought_at": "",
+    "sold_at": ""
+  },
+  {
+    "pair": "GBP/CHF",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "1.0558",
+    "sold_at": "1.0581"
+  },
+  {
+    "pair": "GBP/USD",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "1.3763",
+    "sold_at": "1.3744"
+  },
+  {
+    "pair": "NZD/USD",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "0.6054",
+    "sold_at": "0.6072"
+  },
+  {
+    "pair": "USD/CAD",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "1.3506",
+    "sold_at": "1.3545"
+  },
+  {
+    "pair": "USD/CHF",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "0.7707",
+    "sold_at": "0.7677"
+  },
+  {
+    "pair": "USD/JPY",
+    "status": "Filled",
+    "sell_at": "",
+    "take_profit_at": "",
+    "stop_loss_at": "",
+    "buy_at": "",
+    "bought_at": "154.21",
+    "sold_at": "154.59"
+  }
+]
