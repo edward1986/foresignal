@@ -1,0 +1,10 @@
+pair,status,sell_at,take_profit_at,stop_loss_at,buy_at,bought_at,sold_at
+EUR/USD,Cancelled,,,,,,
+USD/CHF,Filled,,,,,,
+GBP/USD,Filled,,,,,,
+USD/JPY,Filled,,,,,,
+USD/CAD,Filled,,,,,,
+AUD/USD,Filled,,,,,,
+EUR/JPY,Filled,,,,,,
+NZD/USD,Filled,,,,,,
+GBP/CHF,Filled,,,,,,
