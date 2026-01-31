@@ -1,6 +1,7 @@
-# scripts/foresignal_scrape.py
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from bs4 import BeautifulSoup
 URL = "https://foresignal.com/en/"
 TZ = ZoneInfo("Asia/Manila")
 
+# Foresignal obfuscation map
 MAP = "670429+-. 5,813"
 NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
@@ -127,15 +129,70 @@ def parse_signals(html: str) -> pd.DataFrame:
     ]
     df = pd.DataFrame(rows, columns=cols)
 
-    # Ensure all price columns stay as strings (prevents NaN)
-    for c in ["sell_at", "take_profit_at", "stop_loss_at", "buy_at", "bought_at", "sold_at"]:
+    # keep strings (avoid NaN)
+    for c in cols[2:]:
         df[c] = df[c].astype(str).replace({"None": "", "nan": ""})
 
     return df
 
 
+def build_json(df: pd.DataFrame, pulled_at_iso: str) -> dict:
+    """
+    JSON shape:
+    {
+      "source": "foresignal.com",
+      "pulled_at": "...",
+      "signals": [ {pair,status,sell_at,...}, ... ]
+    }
+    """
+    return {
+        "source": "foresignal.com",
+        "pulled_at": pulled_at_iso,
+        "signals": df.to_dict(orient="records"),
+    }
+
+
+def telegram_send_json(payload: dict) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.")
+        return
+
+    # Telegram message limit ~4096 chars. Send compact JSON (and truncate safely if needed).
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(text) > 3800:
+        # If too long, send summary + attach JSON as a file via sendDocument
+        summary = {
+            "source": payload["source"],
+            "pulled_at": payload["pulled_at"],
+            "signals_count": len(payload.get("signals", [])),
+        }
+        telegram_send_text(token, chat_id, f"Signals JSON is large. Summary:\n{json.dumps(summary)}")
+        telegram_send_document(token, chat_id, text.encode("utf-8"), filename="foresignal_signals.json")
+        return
+
+    telegram_send_text(token, chat_id, text)
+
+
+def telegram_send_text(token: str, chat_id: str, text: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
+    r.raise_for_status()
+
+
+def telegram_send_document(token: str, chat_id: str, content: bytes, filename: str) -> None:
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    files = {"document": (filename, content, "application/json")}
+    data = {"chat_id": chat_id, "caption": "Foresignal signals (JSON)"}
+    r = requests.post(url, data=data, files=files, timeout=60)
+    r.raise_for_status()
+
+
 def main() -> None:
     now = datetime.now(TZ)
+    pulled_at = now.isoformat(timespec="seconds")
     date_tag = now.strftime("%Y-%m-%d")
 
     out_dir = Path("data")
@@ -144,19 +201,28 @@ def main() -> None:
     html = fetch_html(URL)
     df = parse_signals(html)
 
-    daily_path = out_dir / f"foresignal_signals_{date_tag}.csv"
-    df.to_csv(daily_path, index=False)
+    # Save CSVs
+    daily_csv = out_dir / f"foresignal_signals_{date_tag}.csv"
+    df.to_csv(daily_csv, index=False)
 
-    history_path = out_dir / "foresignal_signals_history.csv"
+    history_csv = out_dir / "foresignal_signals_history.csv"
     df2 = df.copy()
-    df2.insert(0, "pulled_at", now.isoformat(timespec="seconds"))
+    df2.insert(0, "pulled_at", pulled_at)
+    header = not history_csv.exists()
+    df2.to_csv(history_csv, mode="a", header=header, index=False)
 
-    header = not history_path.exists()
-    df2.to_csv(history_path, mode="a", header=header, index=False)
+    # Build + save JSON
+    payload = build_json(df, pulled_at)
+    daily_json = out_dir / f"foresignal_signals_{date_tag}.json"
+    daily_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Send to Telegram
+    telegram_send_json(payload)
 
     print(df.to_string(index=False))
-    print(f"\nWrote: {daily_path}")
-    print(f"Updated: {history_path}")
+    print(f"\nWrote: {daily_csv}")
+    print(f"Wrote: {daily_json}")
+    print(f"Updated: {history_csv}")
 
 
 if __name__ == "__main__":
