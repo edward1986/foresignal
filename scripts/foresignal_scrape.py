@@ -14,12 +14,11 @@ from bs4 import BeautifulSoup
 URL = "https://foresignal.com/en/"
 TZ = ZoneInfo("Asia/Manila")
 
-# Foresignal obfuscation map
 MAP = "670429+-. 5,813"
 NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 
-def fetch_html(url: str, timeout: int = 30) -> str:
+def fetch_html(url: str) -> str:
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -27,7 +26,7 @@ def fetch_html(url: str, timeout: int = 30) -> str:
             "Chrome/120.0 Safari/537.36"
         )
     }
-    r = requests.get(url, headers=headers, timeout=timeout)
+    r = requests.get(url, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text
 
@@ -41,48 +40,34 @@ def decode_f(encoded: str) -> str:
     return "".join(out).strip()
 
 
-def extract_encoded_from_script(script_text: str) -> str | None:
-    if not script_text:
-        return None
-    m = re.search(r"f\(\s*'([^']+)'\s*\)", script_text)
+def extract_encoded(script: str) -> str | None:
+    m = re.search(r"f\('([^']+)'\)", script or "")
     return m.group(1) if m else None
 
 
-def value_from_signal_value(value_el) -> str | None:
-    if value_el is None:
-        return None
-
-    # Prefer decoding <script>f('...')</script>
-    script_el = value_el.find("script")
-    if script_el:
-        enc = extract_encoded_from_script(script_el.get_text(strip=True))
+def extract_value(value_el) -> str:
+    script = value_el.find("script")
+    if script:
+        enc = extract_encoded(script.text)
         if enc:
-            decoded = decode_f(enc)
-            if decoded:
-                return decoded
+            return decode_f(enc)
 
-    # Fallback: plain numeric text
     txt = value_el.get_text(" ", strip=True)
-    txt = re.sub(r"\s+", " ", txt).strip()
-    txt = re.sub(r"f\(\s*'[^']+'\s*\)\s*;?", "", txt).strip()
+    txt = re.sub(r"f\('[^']+'\)", "", txt)
     m = NUM_RE.search(txt)
-    return m.group(0) if m else None
+    return m.group(0) if m else ""
 
 
 def parse_signals(html: str) -> pd.DataFrame:
     soup = BeautifulSoup(html, "html.parser")
-    rows: list[dict] = []
+    rows = []
 
     for card in soup.select(".card.signal-card"):
-        pair_el = card.select_one(".card-header a[href*='/signals/']")
-        if not pair_el:
-            continue
-
-        pair = pair_el.get_text(strip=True)
+        pair = card.select_one(".card-header a").text.strip()
         status_el = card.select_one(".signal-row.signal-status")
-        status = status_el.get_text(strip=True) if status_el else ""
+        status = status_el.text.strip() if status_el else ""
 
-        data = {
+        row = {
             "pair": pair,
             "status": status,
             "sell_at": "",
@@ -93,136 +78,105 @@ def parse_signals(html: str) -> pd.DataFrame:
             "sold_at": "",
         }
 
-        for row in card.select(".signal-row"):
-            title_el = row.select_one(".signal-title")
-            value_el = row.select_one(".signal-value")
-            if not title_el or not value_el:
+        for r in card.select(".signal-row"):
+            title = r.select_one(".signal-title")
+            value = r.select_one(".signal-value")
+            if not title or not value:
                 continue
 
-            title = title_el.get_text(" ", strip=True)
-            value = value_from_signal_value(value_el) or ""
+            t = title.text.strip()
+            v = extract_value(value)
 
-            if title == "Sell at":
-                data["sell_at"] = value
-            elif title.startswith("Take profit"):
-                data["take_profit_at"] = value
-            elif title == "Stop loss at":
-                data["stop_loss_at"] = value
-            elif title == "Buy at":
-                data["buy_at"] = value
-            elif title == "Bought at":
-                data["bought_at"] = value
-            elif title == "Sold at":
-                data["sold_at"] = value
+            if t == "Sell at":
+                row["sell_at"] = v
+            elif t.startswith("Take profit"):
+                row["take_profit_at"] = v
+            elif t == "Stop loss at":
+                row["stop_loss_at"] = v
+            elif t == "Buy at":
+                row["buy_at"] = v
+            elif t == "Bought at":
+                row["bought_at"] = v
+            elif t == "Sold at":
+                row["sold_at"] = v
 
-        rows.append(data)
+        rows.append(row)
 
-    cols = [
-        "pair",
-        "status",
-        "sell_at",
-        "take_profit_at",
-        "stop_loss_at",
-        "buy_at",
-        "bought_at",
-        "sold_at",
+    return pd.DataFrame(rows)
+
+
+# -------- BEAUTIFUL TELEGRAM HTML --------
+
+def build_html_message(df: pd.DataFrame, pulled_at: str) -> str:
+    lines = [
+        "<b>📊 Foresignal – Daily Signals</b>",
+        f"<i>🕒 {pulled_at} (UTC+8)</i>",
+        ""
     ]
-    df = pd.DataFrame(rows, columns=cols)
 
-    # keep strings (avoid NaN)
-    for c in cols[2:]:
-        df[c] = df[c].astype(str).replace({"None": "", "nan": ""})
+    for _, r in df.iterrows():
+        lines.append(f"<b>{r['pair']}</b>")
+        lines.append(f"Status: <b>{r['status']}</b>")
 
-    return df
+        if r["sell_at"]:
+            lines.append(f"Sell: <code>{r['sell_at']}</code>")
+        if r["buy_at"]:
+            lines.append(f"Buy:  <code>{r['buy_at']}</code>")
+        if r["bought_at"]:
+            lines.append(f"Buy:  <code>{r['bought_at']}</code>")
+        if r["sold_at"]:
+            lines.append(f"Sell: <code>{r['sold_at']}</code>")
+        if r["take_profit_at"]:
+            lines.append(f"TP:   <code>{r['take_profit_at']}</code>")
+        if r["stop_loss_at"]:
+            lines.append(f"SL:   <code>{r['stop_loss_at']}</code>")
 
+        lines.append("")
 
-def build_json(df: pd.DataFrame, pulled_at_iso: str) -> dict:
-    """
-    JSON shape:
-    {
-      "source": "foresignal.com",
-      "pulled_at": "...",
-      "signals": [ {pair,status,sell_at,...}, ... ]
-    }
-    """
-    return {
-        "source": "foresignal.com",
-        "pulled_at": pulled_at_iso,
-        "signals": df.to_dict(orient="records"),
-    }
+    return "\n".join(lines)
 
 
-def telegram_send_json(payload: dict) -> None:
+def send_telegram_html(html: str):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
     if not token or not chat_id:
-        print("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars.")
+        print("Telegram secrets not set")
         return
 
-    # Telegram message limit ~4096 chars. Send compact JSON (and truncate safely if needed).
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(text) > 3800:
-        # If too long, send summary + attach JSON as a file via sendDocument
-        summary = {
-            "source": payload["source"],
-            "pulled_at": payload["pulled_at"],
-            "signals_count": len(payload.get("signals", [])),
-        }
-        telegram_send_text(token, chat_id, f"Signals JSON is large. Summary:\n{json.dumps(summary)}")
-        telegram_send_document(token, chat_id, text.encode("utf-8"), filename="foresignal_signals.json")
-        return
-
-    telegram_send_text(token, chat_id, text)
-
-
-def telegram_send_text(token: str, chat_id: str, text: str) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=30)
-    r.raise_for_status()
+    payload = {
+        "chat_id": chat_id,
+        "text": html,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    requests.post(url, json=payload, timeout=30).raise_for_status()
 
 
-def telegram_send_document(token: str, chat_id: str, content: bytes, filename: str) -> None:
-    url = f"https://api.telegram.org/bot{token}/sendDocument"
-    files = {"document": (filename, content, "application/json")}
-    data = {"chat_id": chat_id, "caption": "Foresignal signals (JSON)"}
-    r = requests.post(url, data=data, files=files, timeout=60)
-    r.raise_for_status()
-
-
-def main() -> None:
+def main():
     now = datetime.now(TZ)
-    pulled_at = now.isoformat(timespec="seconds")
-    date_tag = now.strftime("%Y-%m-%d")
-
-    out_dir = Path("data")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    pulled_at = now.strftime("%Y-%m-%d %H:%M")
 
     html = fetch_html(URL)
     df = parse_signals(html)
 
-    # Save CSVs
-    daily_csv = out_dir / f"foresignal_signals_{date_tag}.csv"
-    df.to_csv(daily_csv, index=False)
+    Path("data").mkdir(exist_ok=True)
 
-    history_csv = out_dir / "foresignal_signals_history.csv"
-    df2 = df.copy()
-    df2.insert(0, "pulled_at", pulled_at)
-    header = not history_csv.exists()
-    df2.to_csv(history_csv, mode="a", header=header, index=False)
+    # Save JSON
+    json_payload = {
+        "source": "foresignal.com",
+        "pulled_at": pulled_at,
+        "signals": df.to_dict(orient="records"),
+    }
+    Path(f"data/foresignal_{now.date()}.json").write_text(
+        json.dumps(json_payload, indent=2), encoding="utf-8"
+    )
 
-    # Build + save JSON
-    payload = build_json(df, pulled_at)
-    daily_json = out_dir / f"foresignal_signals_{date_tag}.json"
-    daily_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Send beautiful HTML to Telegram
+    message = build_html_message(df, pulled_at)
+    send_telegram_html(message)
 
-    # Send to Telegram
-    telegram_send_json(payload)
-
-    print(df.to_string(index=False))
-    print(f"\nWrote: {daily_csv}")
-    print(f"Wrote: {daily_json}")
-    print(f"Updated: {history_csv}")
+    print(message)
 
 
 if __name__ == "__main__":
